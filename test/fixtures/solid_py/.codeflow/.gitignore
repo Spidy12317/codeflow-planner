@@ -1,0 +1,4 @@
+# Demo plan for npm run dev: keep project.json, ignore what the canvas writes.
+*
+!.gitignore
+!project.json

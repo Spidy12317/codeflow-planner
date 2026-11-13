@@ -1,0 +1,11 @@
+{
+  "name": "codeflow-local",
+  "owner": { "name": "Tejas Sumukh" },
+  "plugins": [
+    {
+      "name": "codeflow",
+      "source": "./plugin",
+      "description": "Visual code-flow, UML/SOLID and execution planning canvas for Claude Code."
+    }
+  ]
+}

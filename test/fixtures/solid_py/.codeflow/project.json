@@ -1,0 +1,10 @@
+{
+  "name": "solid-py-demo",
+  "folders": ["shop/domain", "shop/application", "shop/adapters", "shop/infrastructure"],
+  "layers": {
+    "domain": ["shop/domain"],
+    "application": ["shop/application"],
+    "adapters": ["shop/adapters"],
+    "infrastructure": ["shop/infrastructure"]
+  }
+}
