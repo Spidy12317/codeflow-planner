@@ -21,10 +21,10 @@ It has four views:
 
 | Do | How |
 |---|---|
-| Jump to any folder, flow, class, task, view or action | ⌘K (or the `⌘K` button in the status bar) |
+| Jump to any folder, flow, class, task, view or action | Ctrl+K (or the search button in the status bar) |
 | List the methods (flows) in the open folder and pan to one | M (or **ƒ Methods** in the canvas toolbar) |
-| Switch views | ⌘1 Flows · ⌘2 Classes · ⌘3 Messages · ⌘4 Execution (when shown) |
-| Hide / show the side bar | ⌘B, or click the active view's icon |
+| Switch views | Ctrl+1 Flows · Ctrl+2 Classes · Ctrl+3 Messages · Ctrl+4 Execution (when shown) |
+| Hide / show the side bar | Ctrl+B, or click the active view's icon |
 | Resize the side bar or inspector | drag its edge; double-click the edge to reset |
 | Reorder editor tabs | drag a tab; middle-click closes it |
 | Arrange the class diagram | drag classes (saved in `diagram.json`); **Tidy layout** resets |
@@ -164,5 +164,5 @@ This repo follows Clean Architecture:
 
 ## Editing
 
-Click any node to open the inspector. ⌘Z / ⇧⌘Z undo and redo, Delete removes the selection,
+Click any node to open the inspector. Ctrl+Z / Ctrl+Shift+Z undo and redo, Delete removes the selection,
 Esc deselects. Edits save automatically; files changed on disk (e.g. by Claude) reload live.

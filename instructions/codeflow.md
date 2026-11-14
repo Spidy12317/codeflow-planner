@@ -96,7 +96,8 @@ approves the plan; it creates the folders as Python packages.
 5. When the user approves, set the approved items to `approved` and implement exactly what the
    plan says. If the code needs something the plan doesn't show, add it to the plan first.
 6. While implementing, keep status current with `codeflow_edit` (`in_progress` → `done` or
-   `failed`). After code changes, run `codeflow_sync` for the folders you touched.
+   `failed`). Leave `change` as it is: it records what was planned (5.4). After code changes,
+   run `codeflow_sync` for the folders you touched.
 
 Conventions: one step per function call or processing stage, detail in side panels; left and
 right panels are alternative views of the same step, not a sequence; open points go in `notes`
@@ -220,7 +221,9 @@ Every planned item gets a `change`: `new` (adds code), `edit` (changes existing 
 - `new` means the symbol does not exist in the repo today; `edit` and `remove` mean it does.
   Check the code before choosing. The `check` in edit results flags disagreements.
 - Status (`proposed` → `approved` → `in_progress` → `done` / `failed`) is separate and tracks
-  review and implementation.
+  review and implementation. Do not clear `change` when an item is done: the explorer stops
+  showing its letter (A / M / D) on its own once the item is `done`, and a flow's once every
+  item with a status in it is `done`.
 
 ### 5.5 Removals
 

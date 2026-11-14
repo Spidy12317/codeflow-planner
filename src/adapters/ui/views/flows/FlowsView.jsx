@@ -11,12 +11,13 @@ import { CommandPalette } from '../../layout.jsx'
 import { tip } from '../../tooltip.jsx'
 import { blurField, focusField, isTyping } from '../../keys.js'
 import { ancestors, pathTree, useExpanded } from '../../pathTree.js'
-import { addCounts, fileOf, groupFolders, statusCounts, statusLine, topStatus } from './planStats.js'
+import { addCounts, explorerTree, fileOf, shownStatus, statusCounts, statusLine } from './planStats.js'
 import { Welcome } from './Welcome.jsx'
-import { changeCounts, onlyDifferingChanges, rollupChange } from '../../../../domain/plan/change.js'
+import { flowChange, flowChangeCounts, onlyDifferingChanges, rollupChange, withoutDone } from '../../../../domain/plan/change.js'
+import { layerOf } from '../../../../domain/project/layers.js'
 import { indexTab, newFlow, newNote, newPanel, newPs, newRef, newStep, setPsKind, uid } from '../../../../domain/plan/model.js'
 
-// Flows view: explorer tree of folders → files (grouped by Clean Architecture layer)
+// Flows view: explorer tree of folders → files (one directory tree, like VS Code)
 // in the side bar, open folders as editor tabs, the flow canvas, and the inspector.
 
 // HTML cards whose height depends on content; everything else is sized by the layout.
@@ -251,18 +252,9 @@ function Explorer({ project, tabs, active, sel, shownBy, revealReq, onPick, onSh
     return m
   }, [tabs])
   const folderStatus = (node) => addCounts([...(node.leaf ? (tabs[node.path]?.flows || []).map((fl) => flowStatus.get(fl.id) || {}) : []), ...node.kids.map(folderStatus)])
-  const flowChange = useMemo(() => {
-    const m = new Map()
-    for (const t of Object.values(tabs)) for (const fl of t.flows || []) m.set(fl.id, changeCounts(fl))
-    return m
-  }, [tabs])
-  // A file or folder's letter comes from each flow's own change (a new flow that also edits a
-  // model elsewhere is still a new file), falling back to what's inside the flow.
-  const changesOf = (flows) =>
-    addCounts(flows.map((fl) => {
-      const kind = fl.change || rollupChange(flowChange.get(fl.id) || {})
-      return kind ? { [kind]: 1 } : {}
-    }))
+  // A file or folder's letter counts each flow by its own change (a new flow that also edits a
+  // model elsewhere is still a new file), falling back to what's inside it. Done changes don't count.
+  const changesOf = flowChangeCounts
   const flowsUnder = (node) => [...(node.leaf ? tabs[node.path]?.flows || [] : []), ...node.kids.flatMap(flowsUnder)]
   const changeLine = (c) => ['new', 'edit', 'remove'].filter((k) => c[k]).map((k) => `${c[k]} flow${c[k] === 1 ? '' : 's'} ${k === 'new' ? 'new' : k === 'edit' ? 'edited' : 'removed'}`).join(' · ')
   const withStatus = (desc, c, ch = {}) =>
@@ -291,8 +283,8 @@ function Explorer({ project, tabs, active, sel, shownBy, revealReq, onPick, onSh
       label={fl.title}
       title={fl.title}
       tipDesc={flowSummary(fl)}
-      status={topStatus(flowStatus.get(fl.id) || {})}
-      change={fl.change || rollupChange(flowChange.get(fl.id) || {})}
+      status={shownStatus(flowStatus.get(fl.id) || {})}
+      change={flowChange(fl)}
       onClick={() => onPick({ folder, flow: fl.id, ref: fl.id })}
     />
   )
@@ -328,7 +320,7 @@ function Explorer({ project, tabs, active, sel, shownBy, revealReq, onPick, onSh
             title={`${folder}/${node.path}`}
             tipDesc={withStatus(`${count} flow${count === 1 ? '' : 's'}${node.leaf ? '\nClick to draw them on the canvas · M to jump to one' : ''}`, changes, kinds)}
             change={rollupChange(kinds)}
-            status={topStatus(changes)}
+            status={shownStatus(changes)}
             on={node.leaf && folder === active && shownFile === node.path}
             count={node.leaf ? count : undefined}
             onTwisty={() => toggle(key)}
@@ -352,6 +344,7 @@ function Explorer({ project, tabs, active, sel, shownBy, revealReq, onPick, onSh
     const folder = node.leaf ? node.path : null
     const changes = folderStatus(node)
     const kinds = changesOf(flowsUnder(node))
+    const layer = folder && project?.layers ? layerOf(project.layers, folder) : null
     return (
       <div key={node.path}>
         <TreeRow
@@ -362,9 +355,9 @@ function Explorer({ project, tabs, active, sel, shownBy, revealReq, onPick, onSh
           muted={!count}
           label={node.label}
           title={node.path}
-          tipDesc={withStatus(folder ? `${count} flow${count === 1 ? '' : 's'}${tabs[folder]?.purpose ? `\n${tabs[folder].purpose}` : ''}\nClick to expand · click a file to draw it` : `${count} flows inside`, changes, kinds)}
+          tipDesc={withStatus(folder ? `${layer ? `Layer: ${layer}\n` : ''}${count} flow${count === 1 ? '' : 's'}${tabs[folder]?.purpose ? `\n${tabs[folder].purpose}` : ''}\nClick to expand · click a file to draw it` : `${count} flows inside`, changes, kinds)}
           change={rollupChange(kinds)}
-          status={topStatus(changes)}
+          status={shownStatus(changes)}
           count={folder ? count || '–' : undefined}
           tools={
             folder && [
@@ -388,12 +381,7 @@ function Explorer({ project, tabs, active, sel, shownBy, revealReq, onPick, onSh
   return (
     <>
       <Tree>
-        {groupFolders(project).map(([layer, folders]) => (
-          <div key={layer || 'all'} className="tree-group">
-            {layer && <div className="side-label">{layer}</div>}
-            {pathTree(folders, { sort: 'alpha' }).map((n) => renderNode(n, 0))}
-          </div>
-        ))}
+        {explorerTree(project).map((n) => renderNode(n, 0))}
       </Tree>
       <details className="side-section">
         <summary className="side-label">Notation</summary>
@@ -490,7 +478,7 @@ export function FlowsView({ plan, theme, side, request, findings, onNavigate, on
   const canvasTab = useMemo(() => {
     if (!tab || !shown) return null
     const flows = tab.flows.filter((fl) => (shown.file ? fileOf(active, fl) === shown.file : fl.id === shown.flow))
-    return flows.length ? { ...tab, flows: flows.map(onlyDifferingChanges) } : null
+    return flows.length ? { ...tab, flows: flows.map((fl) => onlyDifferingChanges(withoutDone(fl))) } : null
   }, [tab, shownKey, active]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Whatever gets selected (explorer, ⌘K, messages, new flow) is drawn: switch to its file.

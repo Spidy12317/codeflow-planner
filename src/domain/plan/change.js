@@ -1,5 +1,6 @@
 // What a planned item does to the code: adds it (new), changes it (edit) or deletes it
-// (remove). Independent of status, which tracks review and implementation.
+// (remove). Independent of status, which tracks review and implementation; the explorer shows
+// only the changes not done yet (pendingChanges).
 
 export const CHANGES = ['new', 'edit', 'remove']
 // Git-style letters for the explorer.
@@ -16,6 +17,84 @@ export function changeCounts(flow) {
   }
   if (CHANGES.includes(flow.change)) counts[flow.change] = 1
   walk(flow.spine)
+  return counts
+}
+
+// The changes still to make: like changeCounts, but a change whose item is done no longer
+// counts. The plan keeps the change as the record of what was planned; status says it is in
+// the code. An item is done when its own status is "done"; one without a status (a flow, a
+// try / loop frame, a line) is done when everything with a status inside it is done, else it
+// follows its nearest container with a status. failed / in_progress are not done.
+//   → { counts: { new: n, edit: n, remove: n }, own: the flow's own change if still pending }
+export function pendingChanges(flow) {
+  const counts = {}
+  const done = doneItems(flow)
+  const walk = (v) => {
+    if (Array.isArray(v)) return v.forEach(walk)
+    if (!v || typeof v !== 'object') return
+    if (CHANGES.includes(v.change) && !done.has(v)) counts[v.change] = (counts[v.change] || 0) + 1
+    for (const [k, x] of Object.entries(v)) if (k !== 'notes' && typeof x === 'object') walk(x)
+  }
+  const own = CHANGES.includes(flow.change) && !done.has(flow) ? flow.change : null
+  if (own) counts[own] = 1
+  walk(flow.spine)
+  return { counts, own }
+}
+
+// The objects of a flow (the flow included) that are done, by the rule above.
+function doneItems(flow) {
+  const done = new Set()
+  // → true / false when something with a status decides, null when nothing inside has one.
+  const verdict = (v, outerDone) => {
+    if (Array.isArray(v)) {
+      const vs = v.map((x) => verdict(x, outerDone)).filter((d) => d !== null)
+      return vs.length ? vs.every(Boolean) : null
+    }
+    if (!v || typeof v !== 'object') return null
+    const own = v.status ? v.status === 'done' : null
+    const kids = Object.entries(v)
+      .filter(([k, x]) => k !== 'notes' && typeof x === 'object')
+      .map(([, x]) => verdict(x, own ?? outerDone))
+      .filter((d) => d !== null)
+    const d = own ?? (kids.length ? kids.every(Boolean) : null)
+    if (d ?? outerDone) done.add(v)
+    return d
+  }
+  if (verdict({ status: flow.status, spine: flow.spine }, false)) done.add(flow)
+  return done
+}
+
+// For drawing: a copy of the flow where finished work looks like plain code: a done item loses
+// its `done` status and its change (no ring, no pill), and a done flow its NEW / EDIT frame.
+export function withoutDone(flow) {
+  const done = doneItems(flow)
+  const strip = (v) => {
+    if (Array.isArray(v)) return v.map(strip)
+    if (!v || typeof v !== 'object') return v
+    const out = {}
+    for (const [k, x] of Object.entries(v)) {
+      if (done.has(v) && (k === 'change' || (k === 'status' && x === 'done'))) continue
+      out[k] = k === 'notes' ? x : strip(x)
+    }
+    return out
+  }
+  const { change, ...rest } = flow
+  return { ...rest, ...(!done.has(flow) && change && { change }), spine: strip(flow.spine) }
+}
+
+// The letter for one flow in the explorer: its own pending change, else what is pending inside.
+export function flowChange(flow) {
+  const { counts, own } = pendingChanges(flow)
+  return own || rollupChange(counts)
+}
+
+// { new: n, edit: n, remove: n } over the flows of a file or folder, one per flow by its letter.
+export function flowChangeCounts(flows) {
+  const counts = {}
+  for (const fl of flows) {
+    const kind = flowChange(fl)
+    if (kind) counts[kind] = (counts[kind] || 0) + 1
+  }
   return counts
 }
 

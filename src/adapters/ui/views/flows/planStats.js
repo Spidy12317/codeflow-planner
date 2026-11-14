@@ -1,5 +1,6 @@
 import { LAYERS, layerOf } from '../../../../domain/project/layers.js'
 import { entryFile } from '../../../../domain/plan/sync.js'
+import { pathTree } from '../../pathTree.js'
 
 // Read-only roll-ups over the plan shared by the explorer and the overview page.
 
@@ -21,9 +22,19 @@ export function statusCounts(flow) {
 }
 export const addCounts = (list) => list.reduce((acc, c) => (Object.entries(c).forEach(([k, n]) => (acc[k] = (acc[k] || 0) + n)), acc), {})
 export const topStatus = (c) => STATUS_PRIORITY.find((s) => c[s])
+// The status a row's dot and colour show: finished work shows nothing, like a clean file.
+export const shownStatus = (c) => {
+  const s = topStatus(c)
+  return s === 'done' ? undefined : s
+}
 export const statusLine = (c) => STATUS_PRIORITY.filter((s) => c[s]).map((s) => `${c[s]} ${STATUS_LABEL[s]}`).join(' · ')
 
-// Folders grouped by layer (unmapped folders last), as the explorer shows them.
+// The explorer's folder tree: every plan folder in one directory tree, like VS Code. Not split
+// by layer first: a per-layer tree would see "app" with a single child and compact it onto
+// "app/domain", "app/application", ... rows.
+export const explorerTree = (project) => pathTree(project?.folders || [], { sort: 'alpha' })
+
+// Folders grouped by layer (unmapped folders last), as the overview page lists them.
 export function groupFolders(project) {
   const folders = project?.folders || []
   if (!project?.layers) return [[null, folders]]

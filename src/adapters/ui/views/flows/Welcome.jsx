@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
 import { tip } from '../../tooltip.jsx'
 import { threadState } from '../../Threads.jsx'
-import { CHANGE_LETTER, changeCounts, rollupChange } from '../../../../domain/plan/change.js'
-import { STATUS_LABEL, addCounts, fileOf, groupFolders, statusCounts, topStatus } from './planStats.js'
+import { CHANGE_LETTER, flowChange, flowChangeCounts, rollupChange } from '../../../../domain/plan/change.js'
+import { STATUS_LABEL, addCounts, fileOf, groupFolders, shownStatus, statusCounts } from './planStats.js'
 
 // Overview shown when no folder is open: where the plan stands, what needs you, and how to
 // get around. Every row opens what it describes.
@@ -31,12 +31,11 @@ export function Welcome({ project, tabs, threads, findings, onOpenFolder, onOpen
     for (const folder of project?.folders || []) {
       for (const fl of tabs[folder]?.flows || []) {
         const status = statusCounts(fl)
-        const kinds = changeCounts(fl)
-        flows.push({ folder, fl, file: fileOf(folder, fl), status, change: fl.change || rollupChange(kinds) })
+        flows.push({ folder, fl, file: fileOf(folder, fl), status, change: flowChange(fl) })
       }
     }
     const status = addCounts(flows.map((f) => f.status))
-    const change = addCounts(flows.map((f) => (f.change ? { [f.change]: 1 } : {})))
+    const change = flowChangeCounts(flows.map((f) => f.fl))
     const attention = flows
       .filter((f) => f.status.failed || f.status.in_progress || f.status.proposed)
       .sort((a, b) => (b.status.failed || 0) - (a.status.failed || 0) || (b.status.in_progress || 0) - (a.status.in_progress || 0) || (b.status.proposed || 0) - (a.status.proposed || 0))
@@ -47,7 +46,7 @@ export function Welcome({ project, tabs, threads, findings, onOpenFolder, onOpen
   const replied = threads.filter((t) => threadState(t) === 'replied').length
   const folderInfo = (folder) => {
     const list = stats.flows.filter((f) => f.folder === folder)
-    return { count: list.length, status: topStatus(addCounts(list.map((f) => f.status))), change: rollupChange(addCounts(list.map((f) => (f.change ? { [f.change]: 1 } : {})))) }
+    return { count: list.length, status: shownStatus(addCounts(list.map((f) => f.status))), change: rollupChange(flowChangeCounts(list.map((f) => f.fl))) }
   }
   const layers = project?.layers ? 'Clean Architecture layers mapped' : 'Folders as in the repo'
 
