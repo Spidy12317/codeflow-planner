@@ -12,20 +12,14 @@ import { syncPlan } from '../../application/usecases/syncPlan.js'
 import { scaffoldProject } from '../../application/usecases/scaffoldProject.js'
 import { classReport } from '../../application/usecases/classModel.js'
 import { checkPlan } from '../../application/usecases/checkPlan.js'
-import { readExecution, revealExecution, setExecutionStatus, writeExecution } from '../../application/usecases/execution.js'
+import { planValidation } from '../../application/usecases/validatePlan.js'
+import { readExecution, revealExecution, setExecutionModel, setExecutionStatus, writeExecution } from '../../application/usecases/execution.js'
 
-const FORMAT = `Plan format (ids optional on new items; keep existing ids):
-Flow {id,title,entry:"path.py:line",change?,entrypoint?:true (called from outside the plan: HTTP route, CLI, job),spine:[Step|Gather|Try|Loop],refs?:[{title,subtitle?,rows:[[name,type,desc]]}],notes?:[{anchor:stepId,tone:note|check|fix|idea|question,text}]}
-Step {kind:"step",module,num?,name,desc?,badges?:["await"|"loop"|"background"],status?,change?,link?:{tab:folder,flow?},inputs?:[[name,type,desc]],returns?,details?:[{side:"left"|"right",title,items:[Line]}]}
-Gather = Step + {kind:"gather",mode:"gather"|"race"|"any",modeNote?,fanout?,tasks:[{k:"call"|"timer"|"ext",t,note?,link?}]}
-Try {kind:"try",header,body:[spine items],except:{label,title?,items:[Line]}} · Loop {kind:"loop",header,acc?,body:[spine items]}
-Line {k:"act"|"call"|"ext"|"raise"|"ret"|"jump",t,aw?:true,link?,status?,change?} · {k:"cond",t,yes:[Line],no:[Line]} · {k:"loop",t,acc?,body:[Line]} · {k:"try",body:[Line],except:"Exception",handler:[Line]}
-status: proposed|approved|in_progress|done|failed. change: new (adds code) | edit (changes existing code) | remove (deletes it); set it on every planned item, on the most specific item (a new case inside an existing function = that Line is new, its step is edit). Vertical spine = sequence; details = drill-down panels.
-Write for non-technical readers, in plain English: step name = plain action ("Ask Claude for an answer"), code location in module; desc one sentence on why; lines one short sentence each: decisions as questions ("Is Claude set up?"), errors as "Stop: <reason>", results as "Send back <what>", loops as "For each <thing>"; no code expressions, argument lists, settings names, log text or jargon; reasons and caveats go in notes.`
+const CHECK = 'Returns check (plan completeness: unwired new flows, unlinked calls, broken links, wrong change types); fix what it reports before presenting the plan.'
 
-const CHECK = 'Returns check: the completeness check of the whole plan (new flows nothing calls, calls without a link, broken links, change types that disagree with the code); fix everything it reports before presenting the plan.'
+const TOPICS = ['planning', 'format', 'layers', 'new-project', 'execution', 'validation']
 
-const json = (v) => ({ content: [{ type: 'text', text: JSON.stringify(v) }] })
+const json = (v) => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v) }] })
 const fail = (msg) => ({ content: [{ type: 'text', text: msg }], isError: true })
 
 // Wrap a handler: errors become tool errors instead of protocol failures.
@@ -37,8 +31,33 @@ const run = (fn) => async (args) => {
   }
 }
 
+// Long lists are cut to the first few, with the number left out, so a result stays small
+// however large the plan is.
+const CAP = 8
+const CHECK_LISTS = ['orphans', 'unlinked', 'broken', 'changeMismatches']
+function briefCheck(check) {
+  if (check.ok) return { ok: true, summary: check.summary }
+  const more = Object.fromEntries(CHECK_LISTS.filter((k) => check[k].length > CAP).map((k) => [k, check[k].length - CAP]))
+  const lists = Object.fromEntries(CHECK_LISTS.filter((k) => check[k].length).map((k) => [k, check[k].slice(0, CAP)]))
+  return { ok: false, summary: check.summary, ...lists, ...(Object.keys(more).length && { more }) }
+}
+const ids = (list) => (list.length > CAP ? { count: list.length, first: list.slice(0, CAP) } : list)
+// Sync report: ids for what changed, counts for what did not.
+function briefSync({ folders, ...report }) {
+  const brief = Object.fromEntries(
+    Object.entries(folders).map(([folder, r]) => [
+      folder,
+      Object.fromEntries(
+        Object.entries({ added: ids(r.added), updated: ids(r.updated), conflicts: ids(r.conflicts), unchanged: r.unchanged.length, handWritten: r.skippedManual.length }).filter(([, v]) => (Array.isArray(v) ? v.length : v)),
+      ),
+    ]),
+  )
+  const cut = (list) => (list.length > CAP ? [...list.slice(0, CAP), `(+${list.length - CAP} more)`] : list)
+  return { summary: report.summary, folders: brief, warnings: cut(report.warnings), staleManual: cut(report.staleManual), changeMismatches: cut(report.changeMismatches) }
+}
+
 const Edit = z.object({
-  ref: z.string().describe('id of a flow, step, line, table or note; panels are "<stepId>:left|right", a try handler "<stepId>:except"'),
+  ref: z.string().describe('id of the item; panel "<stepId>:left|right", try handler "<stepId>:except"'),
   op: z.enum(['set', 'insert_after', 'insert_before', 'append', 'remove']),
   fields: z.record(z.any()).optional().describe('for set: fields to change; null deletes a field'),
   item: z.any().optional().describe('for insert/append: the new item (same shape as its siblings)'),
@@ -49,29 +68,52 @@ const Layers = z
   .object({ domain: z.array(z.string()), application: z.array(z.string()), adapters: z.array(z.string()), infrastructure: z.array(z.string()) })
   .partial()
 
-// session: { open(root?) → result, ctx() → { repo, extractor, workspace } }
+// session: { open(root?) → result, ctx() → { repo, extractor, workspace }, guide(topic) → text }
 export function registerTools(server, session) {
   const ctx = () => session.ctx()
   // Every plan write returns the completeness check, so it can't be skipped.
-  const withCheck = (result) => ({ ...result, check: checkPlan(ctx()) })
+  const withCheck = (result) => ({ ...result, check: briefCheck(checkPlan(ctx())) })
 
   server.tool(
     'codeflow_open',
-    'Open (or create) the plan in <root>/.codeflow and start this session\'s canvas UI. Call first, with the repo root (your working directory). Returns the UI url and what to do next.',
-    { root: z.string().optional().describe('absolute path of the repo; default: the server\'s working directory'), browser: z.boolean().optional().describe('open the browser (default true)') },
-    run(({ root, browser }) => session.open(root, { browser })),
+    'Open (or create) the plan in <root>/.codeflow and start this session\'s canvas UI. Call first, with the repo root. Returns the UI url, what to do next, and the working protocol to follow.',
+    {
+      root: z.string().optional().describe('absolute repo path; default: the server\'s working directory'),
+      browser: z.boolean().optional().describe('open the browser (default true)'),
+      protocol: z.boolean().optional().describe('false when you already have the protocol'),
+    },
+    run(({ root, browser, protocol }) => session.open(root, { browser, protocol })),
+  )
+
+  server.tool(
+    'codeflow_guide',
+    'One part of the Codeflow protocol; read it once, right before that kind of work. planning: drafting or changing flows (includes format). format: the plan\'s JSON shape. layers, new-project, execution, validation.',
+    { topic: z.enum(TOPICS) },
+    run(({ topic }) => session.guide(topic)),
+  )
+
+  server.tool(
+    'codeflow_validate',
+    'Validate flows against the code with sub-agents. No model: the size of the job and the questions to ask the user. With model and rewrite (the user\'s answers, never your choice): one ready prompt per sub-agent.',
+    {
+      model: z.string().optional().describe('haiku, sonnet, opus…'),
+      rewrite: z.boolean().optional().describe('also reword flows into plain language'),
+      folders: z.array(z.string()).optional(),
+      includeTrivial: z.boolean().optional(),
+    },
+    run((args) => planValidation(ctx(), args)),
   )
 
   server.tool(
     'codeflow_read',
-    'Read the code-flow plan. No folder: overview of folders, layers, flows and messages waiting for you, plus check (the completeness check). With folder: that tab (optionally one flow).',
-    { folder: z.string().optional(), flow: z.string().optional().describe('flow id') },
+    'Read the plan. No folder: overview (flow counts per folder, layers, messages waiting) plus check. With folder: that tab, or one flow. format outline: compact text with every id, for reading and targeted edits; list: the folder\'s flow ids and titles; json (default): full shape, for rewriting a flow.',
+    { folder: z.string().optional(), flow: z.string().optional().describe('flow id'), format: z.enum(['json', 'outline', 'list']).optional() },
     run((args) => (args.folder ? readPlan(ctx(), args) : withCheck(readPlan(ctx(), args)))),
   )
 
   server.tool(
     'codeflow_project',
-    'Change the plan\'s name, folders (the tabs) or Clean Architecture layer mapping { domain, application, adapters, infrastructure: [folder prefixes] }. Confirm a layer mapping with the user before setting it. scaffold: create the planned folders on disk as Python packages, only after the user approved the plan for a new project.',
+    'Change the plan\'s name, folders (the tabs) or Clean Architecture layer mapping (folder prefixes per layer; confirm it with the user first). scaffold: create the planned folders on disk as Python packages, only after the user approved a new project\'s plan.',
     { name: z.string().optional(), folders: z.array(z.string()).optional(), layers: Layers.optional(), scaffold: z.boolean().optional() },
     run(({ scaffold, ...args }) => {
       const updated = updateProject(ctx(), args)
@@ -81,14 +123,14 @@ export function registerTools(server, session) {
 
   server.tool(
     'codeflow_sync',
-    `Refresh flows from the Python code in every folder (or the given ones): adds flows for new entry points, updates generated flows whose code changed (keeping status and notes), and reports conflicts with hand edits and hand-written flows whose entry file is gone. entries / replace (one folder only): generate just those entry points (qualnames, e.g. "Service.method"); replace overwrites their existing flows. ${CHECK}`,
+    `Refresh flows from the Python code in every folder (or the given ones): adds flows for new entry points, updates generated flows whose code changed (keeping status and notes), reports conflicts with hand edits and hand-written flows whose entry file is gone. entries / replace (one folder only): generate just those entry points; replace overwrites their flows. ${CHECK}`,
     {
       folders: z.array(z.string()).optional(),
       entries: z.array(z.string()).optional().describe('qualnames, e.g. "Service.method"'),
       replace: z.boolean().optional(),
     },
     run(async ({ folders, entries, replace }) => {
-      if (!entries && !replace) return withCheck(await syncPlan(ctx(), { folders }))
+      if (!entries && !replace) return withCheck(briefSync(await syncPlan(ctx(), { folders })))
       if (folders?.length !== 1) throw new Error('entries / replace need exactly one folder in folders')
       return withCheck(await generateFlows(ctx(), { folder: folders[0], entries, replace }))
     }),
@@ -101,47 +143,54 @@ export function registerTools(server, session) {
     run((args) => classReport(ctx(), args)),
   )
 
+  // Checked in the handler, not advertised in the tool schema (the shape is in the execution guide).
   const Task = z.object({
     id: z.string().optional(),
     title: z.string(),
     desc: z.string().optional(),
-    refs: z.array(z.object({ tab: z.string(), ref: z.string() })).optional().describe('flow nodes this task implements'),
-    deps: z.array(z.string()).optional().describe('task ids that must be done first'),
-    agent: z.string().nullable().optional().describe('agent id; null = orchestrator does it'),
+    refs: z.array(z.object({ tab: z.string(), ref: z.string() })).optional(),
+    deps: z.array(z.string()).optional(),
+    agent: z.string().nullable().optional(),
     status: z.enum(['todo', 'in_progress', 'done', 'failed', 'blocked']).optional(),
   })
   const Agent = z.object({
     id: z.string().optional(),
     name: z.string(),
-    type: z.string().optional().describe('sub-agent type, e.g. general-purpose'),
+    type: z.string().optional(),
     model: z.string().optional(),
     isolation: z.enum(['none', 'worktree']).optional(),
     notes: z.string().optional(),
   })
+  const ExecutionPlan = z.object({ orchestrator: z.object({ notes: z.string().optional() }).optional(), agents: z.array(Agent), tasks: z.array(Task) })
 
   server.tool(
     'codeflow_execution',
-    'Execution plan shown in the (normally hidden) Execution view: orchestrator + sub-agents with assigned tasks. op read: plan, waves, ready tasks, problems. op write: replace the plan (propose a split). op set_status: update one task. op reveal / hide: show or hide the view. Follow the user\'s assignment exactly when executing.',
+    'Execution plan (Execution view): orchestrator + sub-agents with tasks. Read codeflow_guide("execution") first: it has the plan shape. op read: plan, waves, ready tasks, problems, agents needing a model. write: replace the plan. set_status: one task. set_model: save the model the user chose (agentId, or every agent without one). reveal / hide: the view.',
     {
-      op: z.enum(['read', 'write', 'set_status', 'reveal', 'hide']),
-      plan: z.object({ orchestrator: z.object({ notes: z.string().optional() }).optional(), agents: z.array(Agent), tasks: z.array(Task) }).optional(),
+      op: z.enum(['read', 'write', 'set_status', 'set_model', 'reveal', 'hide']),
+      plan: z.record(z.any()).optional().describe('{ orchestrator?, agents, tasks }'),
       taskId: z.string().optional(),
       status: z.enum(['todo', 'in_progress', 'done', 'failed', 'blocked']).optional(),
+      agentId: z.string().optional(),
+      model: z.string().optional(),
     },
-    run(({ op, plan, taskId, status }) => {
+    run(({ op, plan, taskId, status, agentId, model }) => {
       if (op === 'read') return readExecution(ctx())
       if (op === 'write') {
         if (!plan) throw new Error('write needs plan')
-        return writeExecution(ctx(), plan)
+        const parsed = ExecutionPlan.safeParse(plan)
+        if (!parsed.success) throw new Error(`Invalid plan: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`)
+        return writeExecution(ctx(), parsed.data)
       }
       if (op === 'set_status') return setExecutionStatus(ctx(), { taskId, status })
+      if (op === 'set_model') return setExecutionModel(ctx(), { agentId, model })
       return revealExecution(ctx(), op === 'reveal')
     }),
   )
 
   server.tool(
     'codeflow_edit',
-    `Change one folder tab. flow: create or replace a whole flow (matched by flow.id), for drafting a new flow or a large rewrite. edits: targeted edits, applied all-or-nothing; use set {status:"in_progress"} to track implementation, insert/append to add steps or lines, remove to delete. Pass one of flow or edits. ${CHECK}\n${FORMAT}`,
+    `Change one folder tab. flow: create or replace a whole flow (matched by flow.id), for a new flow or a large rewrite. edits: targeted edits, applied all-or-nothing; set {status:"in_progress"} to track implementation, insert/append to add steps or lines, remove to delete. Pass one of flow or edits. The plan's JSON shape is in codeflow_guide("format"); read codeflow_guide("planning") before planning a change. ${CHECK}`,
     { folder: z.string(), flow: z.record(z.any()).optional(), edits: z.array(Edit).min(1).optional() },
     run(({ folder, flow, edits }) => {
       if (!flow === !edits) throw new Error('Pass one of flow or edits')
@@ -151,7 +200,7 @@ export function registerTools(server, session) {
 
   server.tool(
     'codeflow_messages',
-    'Canvas threads. op list (default): messages the user left on the canvas, with the node, class or task each one is about; include defaults to threads waiting for your reply. op reply: reply in a thread (threadId), or start one on a node (folder + ref) to ask the user something or report progress; resolve closes the thread.',
+    'Canvas threads. op list (default): the user\'s messages with the node, class or task each is about; include defaults to threads awaiting your reply. op reply: reply in a thread (threadId), or start one on a node (folder + ref); resolve closes the thread.',
     {
       op: z.enum(['list', 'reply']).optional(),
       include: z.enum(['awaiting', 'open', 'all']).optional(),

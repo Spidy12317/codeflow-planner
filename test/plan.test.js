@@ -5,6 +5,9 @@ import { applyEdits } from '../src/domain/plan/edits.js'
 import { flowHash, mergeGenerated } from '../src/domain/plan/sync.js'
 import { addMessage, awaitingClaude } from '../src/domain/plan/threads.js'
 import { wiringGaps } from '../src/domain/plan/wiring.js'
+import { flowOutline, isTrivial, tabOutline } from '../src/domain/plan/outline.js'
+import { validationGroups, validationScope } from '../src/domain/plan/validation.js'
+import { agentsWithoutModel, normalizeExecution, setAgentModel } from '../src/domain/execution/model.js'
 import { updateProject } from '../src/application/usecases/openProject.js'
 import { breaksRule, layerOf } from '../src/domain/project/layers.js'
 import { cleanArchProject } from '../src/domain/project/cleanArchTemplate.js'
@@ -165,4 +168,56 @@ test('a folder can only be mapped to one layer', () => {
   assert.throws(() => updateProject({ repo }, { layers: { application: ['services'], adapters: ['services/'] } }), /both application and adapters/)
   const r = updateProject({ repo }, { layers: { application: ['services'], adapters: ['services/llm/utils'] } })
   assert.deepEqual(r.unmapped, [])
+})
+
+// --- token-saving views -------------------------------------------------------------------
+
+const lineFlow = (id, items, extra = {}) => {
+  const f = { id, title: id, entry: `a/x.py:1`, spine: [{ id: `${id}-entry`, kind: 'step', name: `${id}()` }, { id: `${id}-s1`, kind: 'step', num: 1, name: 'work', details: [{ side: 'right', title: 'work', items }] }], refs: [], notes: [], ...extra }
+  return { ...f, origin: 'generated', genHash: flowHash(f) }
+}
+
+test('trivial flows: plain statements only, generated and untouched', () => {
+  assert.equal(isTrivial(lineFlow('a', [{ id: 'p1', k: 'act', t: 'x = 1' }])), true)
+  assert.equal(isTrivial(lineFlow('b', [{ id: 'p1', k: 'call', t: 'save()' }])), false)
+  assert.equal(isTrivial(lineFlow('c', [{ id: 'p1', k: 'cond', t: 'ok?', yes: [], no: [] }])), false)
+  const edited = lineFlow('d', [{ id: 'p1', k: 'act', t: 'x = 1' }])
+  edited.spine[1].name = 'Set the value'
+  assert.equal(isTrivial(edited), false)
+  const manual = { ...lineFlow('e', [{ id: 'p1', k: 'act', t: 'x = 1' }]), origin: 'manual' }
+  assert.equal(isTrivial(manual), false)
+})
+
+test('outline keeps every editable id and is smaller than the JSON', () => {
+  const f = lineFlow('f', [{ id: 'p1', k: 'cond', t: 'ok?', yes: [{ id: 'p2', k: 'ret', t: 'done' }], no: [{ id: 'p3', k: 'raise', t: 'boom', link: { tab: 'b', flow: 'g' } }] }])
+  const text = flowOutline(f)
+  for (const id of ['f', 'f-entry', 'f-s1', 'f-s1:right', 'p1', 'p2', 'p3']) assert.ok(text.includes(id), id)
+  assert.ok(text.includes('link→b›g'))
+  assert.ok(text.length < JSON.stringify(f).length)
+  const tab = { folder: 'a', flows: [f, lineFlow('t', [{ id: 'p9', k: 'act', t: 'x = 1' }])] }
+  assert.ok(tabOutline(tab).includes('(trivial, not expanded)'))
+  assert.ok(!tabOutline(tab).includes('p9'))
+})
+
+test('validation: trivial flows are skipped and agents scale with the flow count', () => {
+  const busy = (n, p) => Array.from({ length: n }, (_, i) => lineFlow(`${p}${i}`, [{ id: `${p}${i}p`, k: 'call', t: 'go()' }]))
+  const tabs = { a: { flows: [...busy(5, 'a'), lineFlow('triv', [{ id: 'tp', k: 'act', t: 'x = 1' }])] }, b: { flows: busy(4, 'b') }, c: { flows: [] } }
+  const scope = validationScope(tabs, ['a', 'b', 'c'])
+  assert.deepEqual(scope.map((s) => [s.folder, s.flows.length, s.trivial]), [['a', 5, 1], ['b', 4, 0]])
+  assert.equal(validationGroups(scope).length, 1) // 9 flows: one agent
+  const big = Object.fromEntries(['a', 'a/x', 'b', 'c', 'd', 'e', 'f', 'g'].map((f) => [f, { flows: busy(40, f.replace('/', '')) }]))
+  const groups = validationGroups(validationScope(big, Object.keys(big)))
+  assert.equal(groups.length, 6) // capped
+  const owned = groups.flatMap((g) => g.folders.map((s) => s.folder))
+  assert.deepEqual(owned.sort(), Object.keys(big).sort()) // every folder exactly once
+  assert.equal(groups.reduce((n, g) => n + g.flows, 0), 320)
+})
+
+test('execution: agents with open tasks and no model must be asked about', () => {
+  const plan = normalizeExecution({ agents: [{ id: 'a1', name: 'api' }, { id: 'a2', name: 'db', model: 'haiku' }, { id: 'a3', name: 'idle' }], tasks: [{ id: 't1', title: 'x', agent: 'a1' }, { id: 't2', title: 'y', agent: 'a2' }] })
+  assert.deepEqual(agentsWithoutModel(plan).map((a) => a.id), ['a1'])
+  setAgentModel(plan, { model: 'sonnet' })
+  assert.equal(plan.agents[0].model, 'sonnet')
+  assert.equal(plan.agents[1].model, 'haiku') // the user's earlier choice stays
+  assert.deepEqual(agentsWithoutModel(plan), [])
 })

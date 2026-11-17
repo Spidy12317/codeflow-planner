@@ -26,7 +26,7 @@ export function openProject({ repo, workspace }, { root, name }) {
       state: 'created',
       project: name,
       folders,
-      next: 'Plan created from the source folders. Run codeflow_sync now to draw the existing code as it is, validate the generated flows with sub-agents (instructions section 8), then summarise. Do not propose a layer mapping or restructuring unless the user asks.',
+      next: 'Plan created from the source folders. Run codeflow_sync now to draw the existing code as it is and summarise it. Then call codeflow_validate with no arguments and ask the user the questions it returns (validate with sub-agents or skip, which model, how thoroughly). Do not start the validation or pick a model until they answer. Do not propose a layer mapping or restructuring unless the user asks.',
     }
   }
   if (workspace.hasCode(root)) {
@@ -48,7 +48,7 @@ export function openProject({ repo, workspace }, { root, name }) {
     project: name,
     folders: project.folders,
     layers: project.layers,
-    next: 'New project: Clean Architecture plan created (nothing on disk yet). Ask the user what to build, draft flows (status proposed) in the right layer tabs, and run codeflow_project({ scaffold: true }) only after they approve.',
+    next: 'New project: Clean Architecture plan created (nothing on disk yet). Read codeflow_guide("new-project"). Ask the user what to build, draft flows (status proposed) in the right layer tabs, and run codeflow_project({ scaffold: true }) only after they approve.',
   }
 }
 

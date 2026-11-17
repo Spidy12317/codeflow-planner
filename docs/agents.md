@@ -1,8 +1,10 @@
 # Using Codeflow from other agents
 
 Codeflow is an MCP server, so any MCP client can use it. Claude Code gets the `/codeflow`
-command from the plugin; other agents get the same protocol from the server's `instructions`
-and from the MCP prompt named `codeflow`.
+command from the plugin; other agents get the same core protocol in the result of their first
+`codeflow_open` call, and from the MCP prompt named `codeflow`. Both point to `codeflow_guide`
+for the rules of each kind of work, read only when that work starts. The server's `instructions` are
+kept to a few lines so an enabled-but-unused server costs almost no context.
 
 Build once, from this repo:
 

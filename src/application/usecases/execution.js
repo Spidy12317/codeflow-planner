@@ -1,4 +1,4 @@
-import { normalizeExecution, readyTasks, setTaskStatus, validateExecution, waves } from '../../domain/execution/model.js'
+import { agentsWithoutModel, normalizeExecution, readyTasks, setAgentModel, setTaskStatus, validateExecution, waves } from '../../domain/execution/model.js'
 
 const load = ({ repo }) => normalizeExecution(repo.readDoc('execution', {}))
 
@@ -12,7 +12,25 @@ export function readExecution(ctx) {
     ready: readyTasks(plan).map((t) => t.id),
     unassigned: plan.tasks.filter((t) => !t.agent).map((t) => t.id),
     problems: validateExecution(plan),
+    ...needsModel(plan),
   }
+}
+
+const needsModel = (plan) => {
+  const agents = agentsWithoutModel(plan)
+  if (!agents.length) return {}
+  return {
+    needsModel: agents.map((a) => a.id),
+    ask: `Before executing: ${agents.length} agent(s) have no model. Ask the user which model they should run on (Haiku, Sonnet, Opus; no option marked as recommended), then save it with op set_model. Do not spawn them on a model you picked.`,
+  }
+}
+
+// The user's model choice for one agent, or for every agent that has none.
+export function setExecutionModel(ctx, { agentId, model }) {
+  const plan = load(ctx)
+  const agents = setAgentModel(plan, { agentId, model })
+  ctx.repo.writeDoc('execution', plan)
+  return { ok: true, model, agents: agents.map((a) => a.id), ...needsModel(plan) }
 }
 
 // Replace the plan (the orchestrator's proposal). Keeps the view's visibility.

@@ -2,8 +2,9 @@
 // Assembles the installable Claude Code plugin in plugin/ (after vite build + esbuild):
 //   plugin/.claude-plugin/plugin.json   manifest
 //   plugin/.mcp.json                    the codeflow MCP server (bundled, no node_modules needed)
-//   plugin/skills/codeflow/SKILL.md     the /codeflow command = instructions/codeflow.md
-//   plugin/instructions/codeflow.md     same text, served as MCP instructions + prompt
+//   plugin/skills/codeflow/SKILL.md     the /codeflow command = the core protocol, instructions/codeflow.md
+//   plugin/instructions/codeflow.md     same text, returned by codeflow_open + the MCP prompt
+//   plugin/instructions/topics/*.md     the guides codeflow_guide serves on demand
 //   plugin/build/, plugin/dist/         server bundle + canvas (written by the build steps)
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,6 +31,7 @@ write(
 )
 write('.mcp.json', JSON.stringify({ mcpServers: { codeflow: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/build/mcp.js'] } } }, null, 2) + '\n')
 write('instructions/codeflow.md', instructions)
+for (const f of fs.readdirSync('instructions/topics')) write(`instructions/topics/${f}`, fs.readFileSync(path.join('instructions/topics', f), 'utf8'))
 write(
   'skills/codeflow/SKILL.md',
   `---
@@ -39,8 +41,8 @@ argument-hint: "[what you want to plan or do]"
 ---
 
 Use the codeflow MCP tools and follow this protocol. Start with step 1 now, using your current
-working directory as the repo root. If the user passed a request with the command, carry it out
-after opening: $ARGUMENTS
+working directory as the repo root, and pass \`protocol: false\` to codeflow_open (you have it
+below). If the user passed a request with the command, carry it out after opening: $ARGUMENTS
 
 ${instructions}`,
 )

@@ -11,6 +11,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerTools } from '../adapters/mcp/tools.js'
 import { openProject } from '../application/usecases/openProject.js'
+import { PLAN_FORMAT } from '../domain/plan/format.js'
 import { createFsPlanRepository } from '../infrastructure/fsPlanRepository.js'
 import { pythonExtractor } from '../infrastructure/pythonExtractor.js'
 import { fsWorkspace } from '../infrastructure/fsWorkspace.js'
@@ -21,7 +22,16 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 // Works from plugin/build (bundled) and from src/main (dev, after npm run build).
 const findUp = (rel) => [path.join(here, '..', rel), path.join(here, '../..', rel), path.join(here, '../../plugin', rel)].find((p) => fs.existsSync(p))
 const STATIC_DIR = findUp('dist')
-const INSTRUCTIONS = fs.readFileSync(findUp('instructions/codeflow.md'), 'utf8')
+// instructions/codeflow.md is the core protocol; instructions/topics/<topic>.md are the guides
+// codeflow_guide serves when that kind of work starts.
+const INSTRUCTIONS_DIR = path.dirname(findUp('instructions/codeflow.md'))
+const PROTOCOL = fs.readFileSync(path.join(INSTRUCTIONS_DIR, 'codeflow.md'), 'utf8')
+// Server instructions sit in every session's context while the server is enabled, so keep them
+// short; the protocol is delivered only when Codeflow is used (codeflow_open, the prompt).
+const INSTRUCTIONS = `Codeflow: a visual planning canvas for this repo (code flows, UML/SOLID, execution plan).
+Use it only when the user asks for Codeflow or to plan, map or review code flows on the canvas.
+Start with codeflow_open (root = the repo root): its result includes the working protocol
+(\`protocol\`) to follow for the rest of the session.`
 
 const argPlan = process.argv.indexOf('--plan')
 const fixedPlan = argPlan > -1 ? process.argv[argPlan + 1] : process.env.CODEFLOW_PLAN_DIR
@@ -39,7 +49,15 @@ const session = {
     throw new Error('No plan open. Call codeflow_open with the repo root first.')
   },
 
-  async open(root, { browser = true } = {}) {
+  protocolSent: false,
+
+  guide(topic) {
+    if (topic === 'format') return PLAN_FORMAT
+    const text = fs.readFileSync(path.join(INSTRUCTIONS_DIR, 'topics', `${topic}.md`), 'utf8')
+    return topic === 'planning' ? `${text}\n## Plan format\n\n${PLAN_FORMAT}\n` : text
+  },
+
+  async open(root, { browser = true, protocol } = {}) {
     const repoRoot = path.resolve(root || process.cwd())
     const planDir = root || !fixedPlan ? path.join(repoRoot, '.codeflow') : path.resolve(fixedPlan)
     if (session.current?.repo.planDir !== planDir) {
@@ -67,7 +85,10 @@ const session = {
       fs.writeFileSync(sessionFile, JSON.stringify({ url: session.ui.url, pid: process.pid, started: new Date().toISOString() }) + '\n')
       if (browser && !process.env.CODEFLOW_NO_BROWSER) opened = openUrl(session.ui.url)
     }
-    return { ...result, url: session.ui.url, browserOpened: opened, ...(other && { otherSessionUrl: other }) }
+    // Send the protocol once per session unless the caller already has it (the /codeflow skill).
+    const sendProtocol = protocol ?? !session.protocolSent
+    if (sendProtocol) session.protocolSent = true
+    return { ...result, url: session.ui.url, browserOpened: opened, ...(other && { otherSessionUrl: other }), ...(sendProtocol && { protocol: PROTOCOL }) }
   },
 
   async closeUi() {
@@ -93,10 +114,10 @@ function isAlive(pid) {
   }
 }
 
-const server = new McpServer({ name: 'codeflow', version: '0.2.0' }, { instructions: INSTRUCTIONS })
+const server = new McpServer({ name: 'codeflow', version: '0.4.0' }, { instructions: INSTRUCTIONS })
 registerTools(server, session)
 server.prompt('codeflow', 'Open this repo\'s code-flow plan and follow the Codeflow working protocol.', () => ({
-  messages: [{ role: 'user', content: { type: 'text', text: INSTRUCTIONS } }],
+  messages: [{ role: 'user', content: { type: 'text', text: PROTOCOL } }],
 }))
 
 // The session is over when the agent closes our stdin or stops the process.

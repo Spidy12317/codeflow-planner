@@ -72,3 +72,18 @@ export function setTaskStatus(plan, taskId, status) {
   t.status = status
   return t
 }
+
+// Agents that still have work and no model: the user chooses it, never the orchestrator.
+export function agentsWithoutModel(plan) {
+  const busy = new Set(plan.tasks.filter((t) => t.agent && t.status !== 'done').map((t) => t.agent))
+  return plan.agents.filter((a) => !a.model && busy.has(a.id))
+}
+
+// Set the model on one agent, or on every agent that has none.
+export function setAgentModel(plan, { agentId, model }) {
+  if (!model) throw new Error('set_model needs model')
+  const targets = agentId ? plan.agents.filter((a) => a.id === agentId) : plan.agents.filter((a) => !a.model)
+  if (agentId && !targets.length) throw new Error(`No agent ${agentId}`)
+  for (const a of targets) a.model = model
+  return targets
+}

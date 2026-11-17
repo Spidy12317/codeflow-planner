@@ -49,14 +49,19 @@ and other MCP clients see [docs/agents.md](docs/agents.md). After changing this 
 
 ## What `/codeflow` does
 
-The full protocol is [instructions/codeflow.md](instructions/codeflow.md). In short:
+The core protocol is [instructions/codeflow.md](instructions/codeflow.md); the rules for each
+kind of work (planning, layers, execution, validation…) are separate guides in
+[instructions/topics](instructions/topics), loaded with `codeflow_guide` only when needed. In short:
 
 1. `codeflow_open` binds `<repo>/.codeflow` and starts the canvas on a free port.
    - **Existing plan**: `codeflow_sync` refreshes flows from the code. New entry points get flows;
      generated flows whose code changed are updated, keeping status and notes; flows you edited
      by hand are never overwritten (a `check` note flags the conflict instead).
-   - **Code but no plan**: a plan is created with one tab per Python source folder. Claude
-     proposes a Clean Architecture layer mapping and asks you to confirm it.
+   - **Code but no plan**: a plan is created with one tab per Python source folder and
+     `codeflow_sync` draws the code as it is. Claude then asks whether to validate the flows
+     with sub-agents, which model they run on (Haiku, Sonnet, Opus, or skip) and whether to
+     also reword them into plain language. The question shows the size of the job; trivial
+     flows are skipped and there is one sub-agent per ~30 flows (at most 6).
    - **Empty repo**: a Clean Architecture plan is created by default (`app/domain`,
      `app/application/use_cases|ports`, `app/adapters/...`, `app/infrastructure`). Nothing is
      created on disk until you approve and Claude runs `codeflow_project({ scaffold: true })`.
@@ -64,22 +69,26 @@ The full protocol is [instructions/codeflow.md](instructions/codeflow.md). In sh
    canvas" → Claude replies and edits → you approve → Claude implements and updates statuses.
 3. `codeflow_classes` re-checks the architecture before and after implementing.
 4. "Plan the execution" makes Claude propose sub-agents and tasks; "execute the plan" runs them
-   wave by wave, exactly as assigned on the canvas.
+   wave by wave, exactly as assigned on the canvas. Agents without a model are not started
+   until you choose one.
 
 ## MCP tools
 
 | Tool | Purpose |
 |---|---|
 | `codeflow_open` | open or create `<root>/.codeflow`, start this session's canvas |
-| `codeflow_read` | overview (with the completeness check), or one folder tab / flow |
+| `codeflow_guide` | one part of the protocol (`planning`, `format`, `layers`, `new-project`, `execution`, `validation`) |
+| `codeflow_read` | overview (flow counts + the completeness check), or one folder tab / flow as `json`, a compact `outline`, or a `list` of flows |
+| `codeflow_validate` | size of a flow validation and the questions to ask; with the user's `model` and `rewrite`, one prompt per sub-agent |
 | `codeflow_project` | set name, folders, layer mapping; `scaffold` creates the planned folders (new projects, after approval) |
 | `codeflow_sync` | refresh flows from the code; `entries` / `replace` generate specific entry points in one folder |
 | `codeflow_classes` | UML class model + dependency-rule and SOLID findings |
-| `codeflow_execution` | read / write / set_status / reveal / hide the execution plan |
+| `codeflow_execution` | read / write / set_status / set_model / reveal / hide the execution plan |
 | `codeflow_edit` | write a whole flow (`flow`) or apply targeted `edits` |
 | `codeflow_messages` | list canvas threads, or reply / start / resolve one (`op: 'reply'`) |
 
 `codeflow_sync` and `codeflow_edit` return `check`: new flows nothing calls, calls without links, broken links, wrong change types.
+Long lists in tool results are cut to the first 8 with a count of the rest, so results stay small on large plans.
 
 ## Plan files (`<repo>/.codeflow/`)
 
